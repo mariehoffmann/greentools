@@ -14,6 +14,7 @@
     Target sequences for each species have to be provided as a list of accession numbers.
     Use the script name2acc.py to receive all accession numbers as a csv file for
     a species given its name and the fasta file from which the blast db was built.
+    It is assumed that the species name is a primary key.
 
     This script requires:
         1. BLAST: local install of blast command line tools and execution of makeblastdb
@@ -44,6 +45,7 @@ LEVELS = {'debug': logging.DEBUG,
 # outfmt 6: qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
 qseqid, sseqid, pident, length, mismatch, gapopen, qstart, qend, sstart, send, evalue, bitscore = 0,1,2,3,4,5,6,7,8,9,10,11
 eps = 1e-6
+costs = lambda match: match.fw[evalue] + match.fw[evalue]
 
 class Primer(object):
     def __init__(self, primer_id_seq):
@@ -68,6 +70,8 @@ class Config(object):
                 if line[0] in self.settings.keys():
                     if eval_rx.match(line[1]) is not None:
                         self.settings.update({line[0]: eval(line[1])})
+                    elif line[0] == 'FILE_ACCS' or line[0] == 'DB_NAME':
+                        self.settings.update({line[0]: eval(line[1])})
                     else:
                         self.settings.update({line[0]: line[1]})
                 else:
@@ -75,18 +79,20 @@ class Config(object):
 
         self.primer_fw_list, self.primer_rv_list = None, None
         self.taxid2accs = {}  # {(name, taxid): [acc_nums]}
-        self.result_file = os.path.join(self.settings["PATH_OUTPUT"], "results.csv")
-        self.no_hits_file = os.path.join(self.settings["PATH_OUTPUT"], "no_hits.csv")
+        self.result_file = [os.path.join(self.settings["PATH_OUTPUT"], "results_%s.csv" %db) for db in self.settings['DB_NAME'] + ['all']]
+        self.no_hits_file = [os.path.join(self.settings["PATH_OUTPUT"], "no_hits_%s.csv" %db) for db in self.settings['DB_NAME']]
         self.output_details = [qseqid, sseqid, pident, length, mismatch, gapopen, qstart, qend, sstart, send, evalue, bitscore]
         # delete result files from previous runs
         print self.settings['APPEND']
         if self.settings['APPEND'] is False:
             logging.info("delete old files")
-            if os.path.isfile(self.result_file):
-                os.system("rm " + self.result_file)
-            if os.path.isfile(self.no_hits_file):
-                os.system("rm " + self.no_hits_file)
-            os.system('echo "#species;taxid;qseqid_fw;qseqid_rv;sseqid;pident_fw;pident_rv;evalue_fw;evalue_rv;sstart_fw;send_fw;sstart_rv;send_rv;dist" > {:s}'.format(self.result_file))
+            for f in self.result_file:
+                if os.path.isfile(f):
+                    os.system("rm " + f)
+                os.system('echo "#species;taxid;qseqid_fw;qseqid_rv;sseqid;pident_fw;pident_rv;evalue_fw;evalue_rv;sstart_fw;send_fw;sstart_rv;send_rv;dist" > {:s}'.format(f))
+            for f in self.no_hits_file:
+                if os.path.isfile(f):
+                    os.system("rm " + f)
         # create tmp directory if not existing
         if not os.path.isdir(self.settings["DIR_TMP"]):
             os.makedirs(self.settings["DIR_TMP"])
@@ -98,8 +104,14 @@ def blast_fmt6(query):
     int(query[mismatch]), int(query[gapopen]), int(query[qstart]), int(query[qend]),
     int(query[sstart]), int(query[send]), float(query[evalue]), float(query[bitscore])]
 
-## connect two query results from blastn with output format 6 as a list
+# output compression
+def compress_match(name, match):
+    return ';'.join([name, match.fw[qseqid],
+    match.rv[qseqid], match.fw[sseqid], str(match.fw[pident]), str(match.rv[pident]),
+    str(match.fw[evalue]), str(match.rv[evalue]), str(match.fw[sstart]), str(match.fw[send]),
+    str(match.rv[sstart]), str(match.rv[send]), str(match.rv[sstart] - match.fw[send])]) + '\n'
 
+## connect two query results from blastn with output format 6 as a list
 class Match(object):
     def __init__(self, query_fw, query_rv):
         self.fw, self.rv = blast_fmt6(query_fw), blast_fmt6(query_rv)
@@ -114,18 +126,34 @@ query_results = {}  # {taxid: QueryResult}
 
 # primers  [[fws], [rvs]]
 def query_all(config):
-    wc_res = subprocess.check_output(["wc", "-l", config.settings['FILE_ACCS']]).strip().split(' ')[0]
-    for row in range(config.settings['FROM_LINE'], min(config.settings['TO_LINE'], int(wc_res))):
-        logging.info("STATUS: row " + str(row))
-        success, name_taxid_accs = query(config, row)
-        if success is False:
-            with open(config.no_hits_file, 'a') as fhdlr:
-                fhdlr.write(';'.join([name_taxid_accs[0], name_taxid_accs[1]]) + '\n')
+    merged = {} # merge best hits from all databases
+
+    for i, db in enumerate(config.settings['DB_NAME']):
+        wc_res = subprocess.check_output(["wc", "-l", config.settings['FILE_ACCS'][i]]).strip().split(' ')[0]
+        for row in range(config.settings['FROM_LINE'], min(config.settings['TO_LINE'], int(wc_res))):
+            logging.info("STATUS: row " + str(row))
+            success, nameANDresult = query(config, row, i)
+            if success is True:
+                name, matches = nameANDresult[0], nameANDresult[1]
+                for match in matches:
+                    best_match = merged.get(name, match)
+                    if costs(best_match) >= costs(match):
+                        merged.update({name: match})
+            else:
+                with open(config.no_hits_file[0], 'a') as fhdlr:
+                    fhdlr.write(';'.join([nameANDresult[0], nameANDresult[1]]) + '\n')
+                logging.debug("Write into no_hits file: " + config.no_hits_file[0])
+            #sys.exit(0)
+    # write merged results
+    logging.info("Write merged result file: " + config.result_file[-1])
+    with open(config.result_file[-1], 'w') as f:
+        for key in sorted(merged.keys()):
+            f.write(compress_match(key, merged[key]))
 
 # BLAST query for all forward (reverse, resp.) primers restricted to given accession numbers
-def query(config, row):
+def query(config, row, db_idx):
     # get accession numbers from taxid file and write them row-wise in tmp file
-    name_taxid_accs = subprocess.check_output(["sed", "-n", "{:d}p".format(row+1), config.settings['FILE_ACCS']]).rstrip().split(';')
+    name_taxid_accs = subprocess.check_output(["sed", "-n", "{:d}p".format(row+1), config.settings['FILE_ACCS'][db_idx]]).rstrip().split(';')
 
     logging.debug(name_taxid_accs[:50])
     acc_file = os.path.join(config.settings['DIR_TMP'], name_taxid_accs[0])
@@ -136,13 +164,13 @@ def query(config, row):
         f.write(accs)
 
     #blastn -db non_human -query $Primer -seqidlist $Acanthoceras -task blastn -outfmt "6
-    blast_fw = subprocess.check_output(["blastn", "-db", config.settings["DB_NAME"], "-query",
+    blast_fw = subprocess.check_output(["blastn", "-db", config.settings["DB_NAME"][db_idx], "-query",
     config.settings["PRIMER_FW"], "-seqidlist", acc_file, "-task", "blastn", "-outfmt", "6"])
     blast_fw = [line.split('\t') for line in blast_fw.strip().split('\n')]
 
     logging.debug("blast fw: " + str(blast_fw))
 
-    blast_rv = subprocess.check_output(["blastn", "-db", config.settings["DB_NAME"], "-query",
+    blast_rv = subprocess.check_output(["blastn", "-db", config.settings["DB_NAME"][db_idx], "-query",
     config.settings["PRIMER_RV"], "-seqidlist", acc_file, "-task", "blastn", "-outfmt", "6"])
     blast_rv = [line.split('\t') for line in blast_rv.strip().split('\n')]
 
@@ -168,6 +196,8 @@ def query(config, row):
     # todo
     logging.debug("Delete tmp accession file: " + acc_file)
     os.remove(acc_file)
+    if os.path.isfile(acc_file) is True:
+        print("Error: tmp file not deleted")
 
     logging.debug("num matches = " + str(len(matches)))
     if len(matches) == 0:
@@ -183,21 +213,18 @@ def query(config, row):
     # write intermediate results to csv file
     # species;taxid;qseqid_fw;qseqid_rv;sseqid;pident_fw;pident_rv;evalue_fw;evalue_rv;sstart_fw;sstart_rv;dist
     logging.debug(config.result_file)
-    with open(config.result_file, 'a') as fhdlr:
-        logging.info("Write match results for " + name_taxid_accs[0])
+    with open(config.result_file[db_idx], 'a') as fhdlr:
+        logging.info("Write match results for " + name_taxid_accs[0] + " to " + config.result_file[db_idx])
         for match in matches:
-            fhdlr.write(';'.join([name_taxid_accs[0], name_taxid_accs[1], match.fw[qseqid],
-            match.rv[qseqid], match.fw[sseqid], str(match.fw[pident]), str(match.rv[pident]),
-            str(match.fw[evalue]), str(match.rv[evalue]), str(match.fw[sstart]), str(match.fw[send]),
-            str(match.rv[sstart]), str(match.rv[send]), str(match.rv[sstart] - match.fw[send])]) + '\n')
-        return True, None
+            fhdlr.write(compress_match(name_taxid_accs[0], match))
+        return True, (name_taxid_accs[0], matches)
     return False, None
 
 if __name__ == "__main__":
     if len(sys.argv) <  2:
         print("Usage: python in-silico_PCR.py <path_to_config.py> [<logging_level>]")
         sys.exit(-1)
-    level_name = 'info'
+    level_name = 'debug'
     if len(sys.argv) == 3:
         level_name = sys.argv[1]
     level = LEVELS.get(level_name, logging.NOTSET)
