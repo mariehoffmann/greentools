@@ -81,6 +81,8 @@ class Config(object):
         self.taxid2accs = {}  # {(name, taxid): [acc_nums]}
         self.result_file = [os.path.join(self.settings["PATH_OUTPUT"], "results_%s.csv" %db) for db in self.settings['DB_NAME'] + ['all']]
         self.no_hits_file = [os.path.join(self.settings["PATH_OUTPUT"], "no_hits_%s.csv" %db) for db in self.settings['DB_NAME']]
+        self.no_hits_file.append(os.path.join(self.settings["PATH_OUTPUT"], "no_hits_all.csv"))
+        
         self.output_details = [qseqid, sseqid, pident, length, mismatch, gapopen, qstart, qend, sstart, send, evalue, bitscore]
         # delete result files from previous runs
         print self.settings['APPEND']
@@ -104,21 +106,23 @@ def blast_fmt6(query):
     int(query[mismatch]), int(query[gapopen]), int(query[qstart]), int(query[qend]),
     int(query[sstart]), int(query[send]), float(query[evalue]), float(query[bitscore])]
 
-# output compression
-def compress_match(name, match):
-    return ';'.join([name, match.fw[qseqid],
-    match.rv[qseqid], match.fw[sseqid], str(match.fw[pident]), str(match.rv[pident]),
-    str(match.fw[evalue]), str(match.rv[evalue]), str(match.fw[sstart]), str(match.fw[send]),
-    str(match.rv[sstart]), str(match.rv[send]), str(match.rv[sstart] - match.fw[send])]) + '\n'
-
 ## connect two query results from blastn with output format 6 as a list
 class Match(object):
-    def __init__(self, query_fw, query_rv):
+    def __init__(self, query_fw, query_rv, db_name, species_name):
         self.fw, self.rv = blast_fmt6(query_fw), blast_fmt6(query_rv)
+        self.db_name = db_name
+        self.species_name = species_name
 
     def __str__(self):
         return "forward match: " + '\t'.join([str(attr) for attr in self.fw]) + \
         "\nreverse match: " + '\t'.join([str(attr) for attr in self.rv])
+
+    def compress(self):
+        return ';'.join([self.species_name, self.fw[qseqid],
+        self.rv[qseqid], self.db_name, self.fw[sseqid], str(self.fw[pident]), str(self.rv[pident]),
+        str(self.fw[evalue]), str(self.rv[evalue]), str(self.fw[sstart]), str(self.fw[send]),
+        str(self.rv[sstart]), str(self.rv[send]), str(self.rv[sstart] - self.fw[send])]) + '\n'
+
 
 
 taxids_dict = {}    # {taxid: species_name}, for later sorting
@@ -140,15 +144,27 @@ def query_all(config):
                     if costs(best_match) >= costs(match):
                         merged.update({name: match})
             else:
-                with open(config.no_hits_file[0], 'a') as fhdlr:
+                with open(config.no_hits_file[i], 'a') as fhdlr:
                     fhdlr.write(';'.join([nameANDresult[0], nameANDresult[1]]) + '\n')
                 logging.debug("Write into no_hits file: " + config.no_hits_file[0])
-            #sys.exit(0)
+
     # write merged results
     logging.info("Write merged result file: " + config.result_file[-1])
     with open(config.result_file[-1], 'w') as f:
         for key in sorted(merged.keys()):
-            f.write(compress_match(key, merged[key]))
+            f.write(merged[key].compress())
+
+    # merge no hits for all databases, i.e. intersection of all no_hits
+    sets = []
+    for no_hit_file in config.no_hits_file[:-1]:
+        with open(no_hit_file, 'r') as f:
+            sets.append(set([line.strip() for line in f.readlines()]))
+    si = sets[0]
+    for se in sets:
+        si = si.intersection(se)
+    with open(config.no_hits_file[-1], 'w') as f:
+        f.write('\n'.join(sorted(list(si))))
+
 
 # BLAST query for all forward (reverse, resp.) primers restricted to given accession numbers
 def query(config, row, db_idx):
@@ -156,8 +172,8 @@ def query(config, row, db_idx):
     name_taxid_accs = subprocess.check_output(["sed", "-n", "{:d}p".format(row+1), config.settings['FILE_ACCS'][db_idx]]).rstrip().split(';')
 
     logging.debug(name_taxid_accs[:50])
-    acc_file = os.path.join(config.settings['DIR_TMP'], name_taxid_accs[0])
-    accs = '\n'.join(name_taxid_accs[2:min(10, len(name_taxid_accs))])
+    acc_file = os.path.join(config.settings['DIR_TMP'], name_taxid_accs[0].replace(' ', '_'))
+    accs = '\n'.join(name_taxid_accs[2:]) #min(10, len(name_taxid_accs))])
     logging.debug("write tmp acc file: " + acc_file)
     logging.debug("accs = " + accs)
     with open(acc_file, 'w') as f:
@@ -188,7 +204,7 @@ def query(config, row, db_idx):
             and int(fw[mismatch]) <= config.settings["MISMATCH"] \
             and int(rv[mismatch]) <= config.settings["MISMATCH"]:
                 if int(fw[sstart]) < int(rv[sstart]) and int(rv[sstart]) - int(fw[send]) in range(config.settings["DISTANCE_MIN"], config.settings["DISTANCE_MAX"]):
-                    matches.append(Match(fw, rv))
+                    matches.append(Match(fw, rv, config.settings['DB_NAME'][db_idx], name_taxid_accs[0]))
                     logging.debug("append match")
                 elif int(rv[sstart]) < int(fw[sstart]) and int(fw[sstart]) - int(rv[send]) in range(config.settings["DISTANCE_MIN"], config.settings["DISTANCE_MAX"]):
                     logging.debug("Unhandled case: rv[sstart] < fw[sstart] for query " + fw[qseqid])
@@ -216,7 +232,7 @@ def query(config, row, db_idx):
     with open(config.result_file[db_idx], 'a') as fhdlr:
         logging.info("Write match results for " + name_taxid_accs[0] + " to " + config.result_file[db_idx])
         for match in matches:
-            fhdlr.write(compress_match(name_taxid_accs[0], match))
+            fhdlr.write(match.compress())
         return True, (name_taxid_accs[0], matches)
     return False, None
 
@@ -224,7 +240,7 @@ if __name__ == "__main__":
     if len(sys.argv) <  2:
         print("Usage: python in-silico_PCR.py <path_to_config.py> [<logging_level>]")
         sys.exit(-1)
-    level_name = 'debug'
+    level_name = 'info'
     if len(sys.argv) == 3:
         level_name = sys.argv[1]
     level = LEVELS.get(level_name, logging.NOTSET)
