@@ -75,18 +75,20 @@ class AlignedSequence(object):
 
 # store potential primer site by start index, length, 'conservation' score, melting temperature range
 class Site(object):
-    def __init__(self, _pos, _len, _score, _melt_rng):
-        self.pos, self.len, self.score, self.melt_range = _pos, _len, _score, _melt_rng
+    def __init__(self, _pos, _len, _score, _melt_rng=None, _gc_content=None):
+        self.pos, self.len, self.score = _pos, _len, _score
+        self.melt_range = _melt_rng
+        self.gc_content = _gc_content
+
     def write(self):
         print 'start_pos\tlength\tscore\tmelt_range\n' + '{}\t{}\t{}\t{}'.format(self.pos, self.len, self.score, self.melt_range)
 
-# test for gap freedom in transcript block
-def is_gapfree(transcripts, i, j):
-    #print set([symbol for transcript in transcripts for symbol in transcript.seq[i:j]])
-    if GAP_SYMBOL in set([symbol for transcript in transcripts for symbol in transcript.seq[i:j]]):
-        #print 'is gap-free: False'
+
+# test for gap freedom in transcript block in
+def is_gapfree(aligned_sequences, i, offset):
+    print 'distinct symbols in {}:{} = '.format(i,i+offset), set([symbol for aseq in aligned_sequences for symbol in aseq.seq[i:i+offset]])
+    if GAP_SYMBOL in set([symbol for aseq in aligned_sequences for symbol in aseq.seq[i:i+offset]]):
         return False
-    #print 'is gap-free: True'
     return True
 
 # read aligned sequences and return dict {accession: AlignedSequence}
@@ -132,21 +134,50 @@ def aligned_sequence_reader(fasta_aligned):
     print d.keys()
     return d.values()
 
+
+# apply primer site filter constraints and store in site obj
+# i: start position, j: offset
+def apply_site_filter(aligned_sequences, pos, offset, site):
+    if is_gapfree(aligned_sequences, pos, offset) == False:
+        logging.DEBUG('Site at {}:{} is not gap free'. format(pos, pos+offset))
+        print 'site not gap free'
+        return False
+    #print [aseq.seq[pos:pos+offset] for aseq in aligned_sequences]
+    # check melting temperature in range
+    check_melt, min_melt, max_melt = primer_utils.filter_melt(aligned_sequences, pos, offset, cfg)
+    # check GC content in range
+    check_GC, GC_min, GC_max = primer_utils.filter_GC_content(aligned_sequences, pos, offset, cfg)
+    logging.debug('GC content check: {}, range [{}:{}]'.format(check_GC, float(GC_min)/offset, float(GC_max)/offset))
+    site.melt_range = (min_melt, max_melt)
+    site.gc_content = (float(GC_min*100/offset)/100, float(GC_max*100/offset)/100)
+    # check for GC clamps in all sequences at target region
+    check_clamp, GC_cnt = reduce(lambda c1, c2: c1 and c2, [primer_utils.filter_GC_clamp(aseq.seq[pos:pos+offset],'+') for aseq in aligned_sequences])
+    # check for hairpins
+    check_hairpin = reduce(lambda c1, c2: c1 and c2, [primer_utils.filter_hairpin(aseq.seq[pos:pos+offset], cfg) for aseq in aligned_sequences])
+    # check for not more max_num_ambig_pos ambiguous columns
+    
+    return reduce(lambda c1, c2: c1 and c2, [check_GC, check_melt, check_clamp]), site  # check_melt, check_clamp, check_hairpin
+
 # compute best blocks of fulfilling primer constraints (see brcd.cfg)
 def find_primer_sites(aligned_sequences):
     n = len(aligned_sequences[0].seq) # total sequence length
-    pr_min, pr_max = int(cfg.var['min_primer_len']), int(cfg.var['max_primer_len'])
+    pr_min, pr_max = int(cfg.var['opt_primer_len'][0]), int(cfg.var['opt_primer_len'][1])
     print 'primer_len_interval = [' + str(pr_min) + ', ' + str(pr_max) + ']'
     sites = []
     i = 0
+    #print 'n - pr_min = ', n - pr_min
+
     while i < n - pr_min:
-        print 'i = ', i, ', min block is gap-free: ', is_gapfree(aligned_sequences, i, i+pr_min)
+        #print "i = ", i
         # block has to be gap-free
         # TODO: skip more than one nt
-        while i < n - pr_min and is_gapfree(aligned_sequences, i, i+pr_min) == False:
+        while i < n - pr_min and is_gapfree(aligned_sequences, i, pr_min) == False:
+            #print '{}:{} is not gap free: {}'.format(i, i+pr_min, is_gapfree(aligned_sequences, i, pr_min))
             gaps_right_most = [aseq.seq[i:i+pr_min].rfind('-') for aseq in aligned_sequences]
+            #print gaps_right_most
             #print 'i = ', i, ', min block is not gap-free: ', is_gapfree(aligned_sequences, i, i+pr_min), ', skip by ',max(gaps_right_most) + 1
-            i += max(gaps_right_most) + 1
+            skip = pr_min+1 if max(gaps_right_most) == -1 else max(gaps_right_most)+1
+            i += skip
         if i >= n - pr_min:
             break
         for j in range(pr_min, pr_max):
@@ -154,37 +185,40 @@ def find_primer_sites(aligned_sequences):
                 break
             # test for gaps beyond min primer length
             if j >= pr_min:
-                if is_gapfree(aligned_sequences, i+pr_min, i+pr_max) == False:
+                if is_gapfree(aligned_sequences, i+pr_min, pr_max-pr_min) == False:
                     i += pr_min-1
                     break
             logging.debug('potential site at [{}, {}]'.format(i, i+j))
-            score = primer_utils.variation_score(aligned_sequences, i, i+j)
-
-            check_melt, min_melt, max_melt = primer_utils.filter_melt(aligned_sequences, i, i+j, cfg)
-            print 'score = ', score, ', check_melt = ', check_melt, ', min_melt = ', min_melt, ', max_melt = ', max_melt
-            check_GC, GC_min, GC_max = primer_utils.filter_GC_content(aligned_sequences, i-1, j)
-            logging.debug('GC content check: {}, range [{}:{}]'.format(check_GC, float(GC_min)/j, float(GC_max)/j))
-            if check_melt == True: # and check_GC == True:
-                sites.append(Site(i-1, j, score, (min_melt, max_melt)))
+            score = primer_utils.variation_score(aligned_sequences, i, j)
+            site = Site(i, j, score, None)
+            check, site = apply_site_filter(aligned_sequences, i, j, site)
+            if check == True:
+                sites.append(site)
         i += 1
+        print 'i = ', i
 
-    # filter top k
-    '''
-    min_k = sorted([site[1] for score in sites], reverse=True)[top_k-1]
-    print "min k: ", min_k
-    sites = [Site(site[0], site[1]) for site in sites if site[1] >= min_k]
-    for idx, site in enumerate(sites):
-        print "\nblock #" + str(idx) + ':'
-        for val in d.values():
-            print val.seq[site.pos:site.pos+primer_len+1]
-    #sys.exit(0)
-    '''
+    # filter for top k scoring conserved sites
 
+    sites.sort(key=lambda s: s.score)
+    kth_best_score = sorted(list(set([site.score for site in sites])))[int(cfg.var['top_k_conserved'])-1]
+    len_sites_before = len(sites)
+    if len_sites_before == 0:
+        print 'no sites found!'
+        sys.exit(0)
+    print 'best and worst scores: ', sites[0].score, sites[-1].score
+    idx = len_sites_before
+    for idx in range(len(sites)):
+        if sites[idx].score > kth_best_score:
+            break
+    del sites[idx:]
+    print  'filter for top k conserved regions reduced number of sites from ', len_sites_before, ' to ', len(sites) #logging.info('')
+    '''
     for site in sites:
         site.write()
         aligned_sequences[0].write_site(site)
         for seq_obj in aligned_sequences[1:]:
             seq_obj.write_site(site, False)
+    '''
     return sites
 
 # 2. compute transcript clusters for all primer combinations
@@ -193,18 +227,18 @@ def distance(s1, s2):
     return sum([1 if a != b else 0 for (a,b) in zip(s1, s2)])
 
 # distance between 2 clusters is smallest distance between 2 individuals
-def single_linkage(c1, c2, left, right):
-    seq_set1 = set([t_obj.seq[left:right] for t_obj in c1])
-    seq_set2 = set([t_obj.seq[left:right] for t_obj in c2])
+def single_linkage(c1, c2, pos, offset):
+    seq_set1 = set([t_obj.seq[pos:pos+offset] for t_obj in c1])
+    seq_set2 = set([t_obj.seq[pos:pos+offset] for t_obj in c2])
     return min([distance(s1, s2) for s1 in seq_set1 for s2 in seq_set2])
 
-# seq_obj_list: [AlignedSequence], posx: transcript start/end position
-def agglomerative_clustering(seq_obj_list, left, right):
+# seq_obj_list: [AlignedSequence], pos: transcript start position, length: transcript length
+def agglomerative_clustering(seq_obj_list, pos, offset):
     # similarity in terms of differing nt columns
-    threshold = int(cfg.var['theta'] * (right-left))
-    logging.debug('threshold for clustering = ' + str(threshold) + ', theta = {}, lenseq = {}'.format(cfg.var['theta'], right-left))
+    threshold = int(cfg.var['theta'] * offset)
+    logging.debug('threshold for clustering = ' + str(threshold) + ', theta = {}, lenseq = {}'.format(cfg.var['theta'], offset))
     clusters = [[seq_obj] for seq_obj in seq_obj_list]
-    min_dist_pair = [(single_linkage(c1, c2, left, right), (i,j+i+1)) for i, c1 in enumerate(clusters[:-1]) for j, c2 in enumerate(clusters[i+1:])]
+    min_dist_pair = [(single_linkage(c1, c2, pos, offset), (i,j+i+1)) for i, c1 in enumerate(clusters[:-1]) for j, c2 in enumerate(clusters[i+1:])]
     min_dist_pair.sort(key=lambda item: item[0])
     #print 'min_dist_pair = ', min_dist_pair[0]
     logging.debug('threshold = {}'.format(threshold))
@@ -218,7 +252,7 @@ def agglomerative_clustering(seq_obj_list, left, right):
         if len(clusters) < 2:
             return clusters
         # compute new smallest distance
-        min_dist_pair = [(single_linkage(c1, c2, left, right), (i,j+i+1)) for i, c1 in enumerate(clusters[:-1]) for j, c2 in enumerate(clusters[i+1:])]
+        min_dist_pair = [(single_linkage(c1, c2, pos, offset), (i,j+i+1)) for i, c1 in enumerate(clusters[:-1]) for j, c2 in enumerate(clusters[i+1:])]
         min_dist_pair.sort(key=lambda item: item[0])
 
     #sys.exit(0)
@@ -228,21 +262,27 @@ def agglomerative_clustering(seq_obj_list, left, right):
 def combine_sites(aligned_sequences, sites):
     cluster_select = []
     k = 0
-    output = '#fw_pos\tfw_len\tfw_seq\tfw_melt\trv_pos\trv_len\trv_seq\trv_melt\ttranscript_len\n'
+    output = primer_utils.one_letter_decode + '\n#fw_pos\tfw_len\tfw_seq\t\t\tfw_melt\
+    \tGC_content\trv_pos\trv_len\trv_seq\t\t\trv_melt\tGC_content\ttranscript_len\
+    hairpin\n'
     sites.sort(key=lambda site: (site.pos, site.len))
+    print 'site start positions = ', [site.pos for site in sites]
     for i, fw in enumerate(sites[:-1]):
         i2 = i+1
         while i2 < len(sites):
             rv = sites[i2]
-            left, right = fw.pos + fw.len, rv.pos
-            if right - left in range(int(cfg.var['min_PCR_prod_len']), int(cfg.var['max_PCR_prod_len'])+1) and is_gapfree(aligned_sequences, left, right) is True:
-                logging.debug('combine (left,right) = ({},{}), diff = {}'.format(left, right, right-left))
+            ts_pos = fw.pos + fw.len    # transcript start position
+            ts_offset = rv.pos - ts_pos    # transcript length
+            #print 'try (left,right) = ({},{}), diff = {}'.format(ts_pos, ts_pos+ts_offset, ts_offset)
+            if ts_offset in range(int(cfg.var['PCR_prod_len'][0]), int(cfg.var['PCR_prod_len'][1])+1) and is_gapfree(aligned_sequences, ts_pos, ts_offset) == True:
+                #print 'product in range'
+                logging.debug('combine (left,right) = ({},{}), diff = {}'.format(ts_pos, ts_pos+ts_offset, ts_offset))
                 k += 1
                 #transcripts = [Transcript(d[key]val[0][pos_start:pos_end], val[1], val[2]) for key in d.keys()]
                 #print "current block from " + str(left) + " to " + str(right)
                 #for transcript in d.values():
                 #    print transcript.seq[left:right]
-                clusters = agglomerative_clustering(aligned_sequences, left, right)
+                clusters = agglomerative_clustering(aligned_sequences, ts_pos, ts_offset)
                 #print '\n##################################'
                 label_identities = [0 if len(set([transcript.label for transcript in cluster])) == 1 else 1 for cluster in clusters]
                 logging.debug('label identity in clusters: ' + str(label_identities))
@@ -263,17 +303,18 @@ def combine_sites(aligned_sequences, sites):
                         for transcript in cluster[1:]:
                             transcript.write_transcript(fw, rv, False)
                         print '-------------------------------'
-                        check_GC, min_GC, max_GC = primer_utils.filter_GC_content(aligned_sequences, fw.pos, fw.len)
-                        logging.debug("check_GC, min_GC, max_GC = {}, [{}:{}]".format(check_GC, float(min_GC)/fw.len, float(max_GC)/fw.len))
+
                     #    output = '#fw_pos\tfw_len\tfw_seq\tfw_melt\trv_pos\trv_len\trv_seq\trv_melt\ttranscript_len\n'
                     # debug: should be gap free here
+                    for s in aligned_sequences:
+                        print s.seq[fw.pos:fw.pos+fw.len]
                     fw_seq = primer_utils.compress(aligned_sequences, fw.pos, fw.len)
                     rv_seq = primer_utils.complement_compress(aligned_sequences, rv.pos, rv.len)
-
-                    output += '{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n'.format(\
-                    fw.pos, fw.len, fw_seq, primer_utils.primer_melt_wallace(fw.seq), \
-                    rv.pos, rv.len, rv_seq, primer_utils.primer_melt_wallace(rv.seq), \
-                    right-left)
+                    has_hairpin = "Yes" if reduce(lambda c1, c2: c1 and c2, [primer_utils.filter_hairpin(aseq.seq[fw.pos+fw.len:rv.pos], cfg) for aseq in aligned_sequences]) == True else "No"
+                    output += '{}\t{}\t{}\t[{},{}]\t\t[{},{}]\t{}\t{}\t{}\t[{},{}]\t[{},{}]\t{}\t{}\n'.format(\
+                    fw.pos, fw.len, fw_seq, fw.melt_range[0], fw.melt_range[1], fw.gc_content[0], fw.gc_content[1], \
+                    rv.pos, rv.len, rv_seq, rv.melt_range[0], rv.melt_range[1], rv.gc_content[0], rv.gc_content[1], \
+                    ts_offset, has_hairpin)
                     #sys.exit(0)
             # skip 2nd index if next site is only extension of previous one and did not produce correct
             # TODO: check this logic for correctness
@@ -284,14 +325,8 @@ def combine_sites(aligned_sequences, sites):
                 #if k >= 500:
                 #    sys.exit(0)
             i2 += 1
+    print output
     return cluster_select
-
-# return all sites with scores smaller or equal to k-th score in sorted list
-def filter_topk(sites, k):
-    topk_score = sorted(list(set([site.score for site in sites])))[k]
-    print 'topk_score = ', topk_score
-
-    return [site for site in sites if site.score <= topk_score]
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
@@ -299,7 +334,6 @@ if __name__ == '__main__':
         sys.exit(0)
     os.remove(log_file)
     logging.basicConfig(filename=log_file, file_mode='w', level=logging.DEBUG)
-    #logger = logging.getLogger()
     global cfg
     cfg = config.Config(sys.argv[1])
     print 'cfg = ', cfg
