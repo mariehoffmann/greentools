@@ -31,7 +31,7 @@ def convert(val):
         return val[1:-1]  # rm apostrophes
     if LIST.match(val) is not None:
         items = [item.strip() for item in val[val.find('[')+1:val.find(']')].split(',')]
-        print 'items split and stripped: ' + str(items)
+        #print 'items split and stripped: ' + str(items)
         return [convert(item) for item in items]
 
 class Config(object):
@@ -55,6 +55,6 @@ class Config(object):
                 self.var[vv[0]] = convert(vv[1])
 
                 print vv[0] + ': ' + vv[1]
-                print "type is ", type(vv[1])
+                #print "type is ", type(vv[1])
                 self.order.append((vv[0], pos))
         logging.info(self.var)

@@ -41,6 +41,7 @@ import config_reader as config
 import primer_utils
 
 cfg = None
+log = None
 log_file = 'brcd.log'
 
 GAP_SYMBOL = '-'
@@ -83,10 +84,15 @@ class Site(object):
     def write(self):
         print 'start_pos\tlength\tscore\tmelt_range\n' + '{}\t{}\t{}\t{}'.format(self.pos, self.len, self.score, self.melt_range)
 
+class Log(object):
+    def __init__(self):
+        self.cnt = []  # count for potential sites [(count, filter_name)]
+    # count:int, filter:str
+    def add(self, count, filter_name):
+        self.cnt.append((count, filter_name))
 
 # test for gap freedom in transcript block in
 def is_gapfree(aligned_sequences, i, offset):
-    print 'distinct symbols in {}:{} = '.format(i,i+offset), set([symbol for aseq in aligned_sequences for symbol in aseq.seq[i:i+offset]])
     if GAP_SYMBOL in set([symbol for aseq in aligned_sequences for symbol in aseq.seq[i:i+offset]]):
         return False
     return True
@@ -120,20 +126,12 @@ def aligned_sequence_reader(fasta_aligned):
         # write last parsed entry
         if seq != '':
             d[acc] = AlignedSequence(seq, label, acc, header)
-
-        keys = sorted(d.keys())
-        print 'num keys = ' + str(len(keys))
-        print '0..199'
-        print '\n'.join([key + ': ' + d[key].seq[:200] for key in keys])
-        print '200..399'
-        print '\n'.join([key + ': ' + d[key].seq[200:400] for key in keys])
-        print '400..599'
-        print '\n'.join([key + ': ' + d[key].seq[400:600] for key in keys])
-        print '600..799'
-        print '\n'.join([key + ': ' + d[key].seq[600:800] for key in keys])
-    print d.keys()
+        keys_srt = sorted(d.keys())
+        block_len = 200  # num characters per row for terminal output
+        for block_id in range(len(d[keys_srt[0]].seq)/block_len + 1):
+            print '{}..{}'.format(block_id*block_len, (block_id+1)*block_len-1)
+            print '\n'.join([key + ': ' + d[key].seq[block_id*block_len:(block_id+1)*block_len] for key in keys_srt])
     return d.values()
-
 
 # apply primer site filter constraints and store in site obj
 # i: start position, j: offset
@@ -155,22 +153,30 @@ def apply_site_filter(aligned_sequences, pos, offset, site):
     # check for hairpins
     check_hairpin = reduce(lambda c1, c2: c1 and c2, [primer_utils.filter_hairpin(aseq.seq[pos:pos+offset], cfg) for aseq in aligned_sequences])
     # check for not more max_num_ambig_pos ambiguous columns
-    
-    return reduce(lambda c1, c2: c1 and c2, [check_GC, check_melt, check_clamp]), site  # check_melt, check_clamp, check_hairpin
+    check_ambig_pos = primer_utils.ambiguous_positions(aligned_sequences, pos, offset) <= cfg.var['max_num_ambig_pos']
+    if pos in [213, 216, 222, 223, 321, 322]:
+        logging.debug('apply_site_filter, pos = {}, check_GC: {}, check_melt: {} ([{}:{}]), check_clamp: {}, check_hairpin: {}, check_ambig_pos: {}'.\
+        format(pos, check_GC, check_melt, site.melt_range[0], site.melt_range[1], check_clamp, check_hairpin, check_ambig_pos))
+    return reduce(lambda c1, c2: c1 and c2, [check_GC, check_melt, check_clamp, check_ambig_pos]), site  # check_melt, check_clamp, check_hairpin
+
+def apply_site_combined_filter(aligned_sequences, fw, rv):
+    ts_pos = fw.pos + fw.len    # transcript start position
+    ts_offset = rv.pos - ts_pos    # transcript length
+    check_PCR_prod_len = ts_offset in range(int(cfg.var['PCR_prod_len'][0]), int(cfg.var['PCR_prod_len'][1])+1)
+    check_PCR_prod_gapfree = is_gapfree(aligned_sequences, ts_pos, ts_offset)
+    check_melt_diff = max(fw.melt_range[1], rv.melt_range[1])-min(fw.melt_range[0], rv.melt_range[0]) <= cfg.var['max_melt_diff']
+    logging.debug('apply combined filter, fw.pos = {}, rv.pos = {}. check_PCR_prod_len: {}, check_PCR_prod_gapfree: {}, check_melt_diff: {}'.\
+    format(fw.pos, rv.pos, check_PCR_prod_len, check_PCR_prod_gapfree, check_melt_diff))
+    return reduce(lambda c1, c2: c1 and c2, [check_PCR_prod_len, check_PCR_prod_gapfree, check_melt_diff])
 
 # compute best blocks of fulfilling primer constraints (see brcd.cfg)
 def find_primer_sites(aligned_sequences):
     n = len(aligned_sequences[0].seq) # total sequence length
     pr_min, pr_max = int(cfg.var['opt_primer_len'][0]), int(cfg.var['opt_primer_len'][1])
-    print 'primer_len_interval = [' + str(pr_min) + ', ' + str(pr_max) + ']'
     sites = []
     i = 0
-    #print 'n - pr_min = ', n - pr_min
-
     while i < n - pr_min:
-        #print "i = ", i
         # block has to be gap-free
-        # TODO: skip more than one nt
         while i < n - pr_min and is_gapfree(aligned_sequences, i, pr_min) == False:
             #print '{}:{} is not gap free: {}'.format(i, i+pr_min, is_gapfree(aligned_sequences, i, pr_min))
             gaps_right_most = [aseq.seq[i:i+pr_min].rfind('-') for aseq in aligned_sequences]
@@ -189,28 +195,35 @@ def find_primer_sites(aligned_sequences):
                     i += pr_min-1
                     break
             logging.debug('potential site at [{}, {}]'.format(i, i+j))
-            score = primer_utils.variation_score(aligned_sequences, i, j)
+            # TODO: score will later include other stats like distance of ambigous positions towards end
+            score = primer_utils.ambiguous_positions(aligned_sequences, i, j)
             site = Site(i, j, score, None)
             check, site = apply_site_filter(aligned_sequences, i, j, site)
+
             if check == True:
                 sites.append(site)
         i += 1
-        print 'i = ', i
+        #print 'i = ', i
 
+    log.add(len(sites), 'apply_site_filter')
     # filter for top k scoring conserved sites
-
-    sites.sort(key=lambda s: s.score)
-    kth_best_score = sorted(list(set([site.score for site in sites])))[int(cfg.var['top_k_conserved'])-1]
-    len_sites_before = len(sites)
-    if len_sites_before == 0:
+    if len(sites) == 0:
         print 'no sites found!'
         sys.exit(0)
+    sites.sort(key=lambda s: s.score)
     print 'best and worst scores: ', sites[0].score, sites[-1].score
-    idx = len_sites_before
-    for idx in range(len(sites)):
-        if sites[idx].score > kth_best_score:
-            break
-    del sites[idx:]
+    len_sites_before = len(sites)
+    best_scores = sorted(list(set([site.score for site in sites])))
+
+    if len(best_scores) > cfg.var['top_k_conserved']:
+        kth_best_score = best_scores[int(cfg.var['top_k_conserved'])-1]
+
+        idx = len(sites)
+        for idx in range(len(sites)):
+            if sites[idx].score > kth_best_score:
+                break
+        del sites[idx:]
+    log.add(len(sites), 'top_k_conserved')
     print  'filter for top k conserved regions reduced number of sites from ', len_sites_before, ' to ', len(sites) #logging.info('')
     '''
     for site in sites:
@@ -274,7 +287,8 @@ def combine_sites(aligned_sequences, sites):
             ts_pos = fw.pos + fw.len    # transcript start position
             ts_offset = rv.pos - ts_pos    # transcript length
             #print 'try (left,right) = ({},{}), diff = {}'.format(ts_pos, ts_pos+ts_offset, ts_offset)
-            if ts_offset in range(int(cfg.var['PCR_prod_len'][0]), int(cfg.var['PCR_prod_len'][1])+1) and is_gapfree(aligned_sequences, ts_pos, ts_offset) == True:
+            check = apply_site_combined_filter(aligned_sequences, fw, rv)
+            if check == True:
                 #print 'product in range'
                 logging.debug('combine (left,right) = ({},{}), diff = {}'.format(ts_pos, ts_pos+ts_offset, ts_offset))
                 k += 1
@@ -339,6 +353,8 @@ if __name__ == '__main__':
     print 'cfg = ', cfg
     aligned_sequences = aligned_sequence_reader(cfg.var['fasta_aligned'])
     # 1st filter: select all primer sites fulfilling melting temperature range
+    global log
+    log = Log()
     sites = find_primer_sites(aligned_sequences)
     logging.info('Number of single primer sites found: ' + str(len(sites)))
     print 'Number of single primer sites found: {}'.format(len(sites))

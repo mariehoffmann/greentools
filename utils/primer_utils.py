@@ -45,7 +45,7 @@ def primer_melt_salt(primer, Na):
 # variation measure for a block of aligned sequences in terms of number of columns
 # having different nucleotides. A low score indicates high conservation.
 # input sequences:[[]], pos:int, offset:int
-def variation_score(aligned_sequences, pos, offset):
+def ambiguous_positions(aligned_sequences, pos, offset):
     transposed = [[aseq.seq[i] for aseq in aligned_sequences] for i in range(pos, pos+offset)]
     #print transposed
     score = sum([1 if len(set(col)) > 1 else 0 for col in transposed])
