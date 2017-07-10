@@ -2,16 +2,16 @@
     ============================================================================
         GreenBox - Script Collection for Metagenomics
     ============================================================================
-        Task: barcode search (brcd) with low complex primers
+        Task: marker search with low complex primers
 
         Compute good primer pairs for a set of aligned sequences such that species resolution
         is optimal. In other words, search a region that serves as a marker and for which
         sound primers can be found. For setting path to aligned sequence file, primer pair
-        melting temperatures, etc. use brcd.cfg.
+        melting temperatures, etc. use marker_search.cfg.
         To produce aligned sequences you can use PAGAN:
             wasabiapp.org/software/pagan/phylogenetic_multiple_alignment
 
-        Call:   python brcd.py <path_to/brcd.cfg>
+        Call:   python marker_search.py <path_to/marker_search.cfg>
 
         Output: csv file with forward (fw) and reverse (rv) primer start positions and their
                 sequences and a score based on how well the design constraints match. Format:
@@ -42,7 +42,7 @@ import primer_utils
 
 cfg = None
 log = None
-log_file = 'brcd.log'
+log_file = 'marker_search.log'
 
 GAP_SYMBOL = '-'
 
@@ -131,6 +131,7 @@ def aligned_sequence_reader(fasta_aligned):
         for block_id in range(len(d[keys_srt[0]].seq)/block_len + 1):
             print '{}..{}'.format(block_id*block_len, (block_id+1)*block_len-1)
             print '\n'.join([key + ': ' + d[key].seq[block_id*block_len:(block_id+1)*block_len] for key in keys_srt])
+            print ' '*(len(key)+2) + primer_utils.column_matches(d.values(), block_id*block_len, block_len, GAP_SYMBOL)
     return d.values()
 
 # apply primer site filter constraints and store in site obj
@@ -169,7 +170,7 @@ def apply_site_combined_filter(aligned_sequences, fw, rv):
     format(fw.pos, rv.pos, check_PCR_prod_len, check_PCR_prod_gapfree, check_melt_diff))
     return reduce(lambda c1, c2: c1 and c2, [check_PCR_prod_len, check_PCR_prod_gapfree, check_melt_diff])
 
-# compute best blocks of fulfilling primer constraints (see brcd.cfg)
+# compute best blocks of fulfilling primer constraints (see marker_search.cfg)
 def find_primer_sites(aligned_sequences):
     n = len(aligned_sequences[0].seq) # total sequence length
     pr_min, pr_max = int(cfg.var['opt_primer_len'][0]), int(cfg.var['opt_primer_len'][1])
@@ -344,7 +345,7 @@ def combine_sites(aligned_sequences, sites):
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
-        print "Wrong number of arguments: python brcd.py <path_to/brcd.cfg>"
+        print "Wrong number of arguments: python marker_search.py <path_to/marker_search.cfg>"
         sys.exit(0)
     os.remove(log_file)
     logging.basicConfig(filename=log_file, file_mode='w', level=logging.DEBUG)
