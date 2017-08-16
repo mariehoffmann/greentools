@@ -204,7 +204,6 @@ def find_primer_sites(aligned_sequences):
             if check == True:
                 sites.append(site)
         i += 1
-        #print 'i = ', i
 
     log.add(len(sites), 'apply_site_filter')
     # filter for top k scoring conserved sites
@@ -269,7 +268,6 @@ def agglomerative_clustering(seq_obj_list, pos, offset):
         min_dist_pair = [(single_linkage(c1, c2, pos, offset), (i,j+i+1)) for i, c1 in enumerate(clusters[:-1]) for j, c2 in enumerate(clusters[i+1:])]
         min_dist_pair.sort(key=lambda item: item[0])
 
-    #sys.exit(0)
     return clusters
 
 # classify transcripts for all site combinations and select if discrimination is in same manner like the target one
@@ -280,7 +278,8 @@ def combine_sites(aligned_sequences, sites):
     \tGC_content\trv_pos\trv_len\trv_seq\t\t\trv_melt\tGC_content\ttranscript_len\
     hairpin\n'
     sites.sort(key=lambda site: (site.pos, site.len))
-    print 'site start positions = ', [site.pos for site in sites]
+    print 'found {} site start positions = {}'.format(len(sites), str([site.pos for site in sites]))
+    sys.exit(0)
     for i, fw in enumerate(sites[:-1]):
         i2 = i+1
         while i2 < len(sites):
@@ -330,15 +329,12 @@ def combine_sites(aligned_sequences, sites):
                     fw.pos, fw.len, fw_seq, fw.melt_range[0], fw.melt_range[1], fw.gc_content[0], fw.gc_content[1], \
                     rv.pos, rv.len, rv_seq, rv.melt_range[0], rv.melt_range[1], rv.gc_content[0], rv.gc_content[1], \
                     ts_offset, has_hairpin)
-                    #sys.exit(0)
+        
             # skip 2nd index if next site is only extension of previous one and did not produce correct
             # TODO: check this logic for correctness
             if len(cluster_select) == 0 or cluster_select[-1][1].pos != rv.pos:
                 while i2 < len(sites)-1 and sites[i2].pos == sites[i2+1].pos:
                     i2 += 1
-                #i2 -= 1
-                #if k >= 500:
-                #    sys.exit(0)
             i2 += 1
     print output
     return cluster_select
@@ -347,7 +343,8 @@ if __name__ == '__main__':
     if len(sys.argv) != 2:
         print "Wrong number of arguments: python marker_search.py <path_to/marker_search.cfg>"
         sys.exit(0)
-    os.remove(log_file)
+    if os.path.exists(log_file) is True:
+        os.remove(log_file)
     logging.basicConfig(filename=log_file, file_mode='w', level=logging.DEBUG)
     global cfg
     cfg = config.Config(sys.argv[1])

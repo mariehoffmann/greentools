@@ -52,6 +52,27 @@ def ambiguous_positions(aligned_sequences, pos, offset):
     #print score
     return score
 
+# G: Gibb's free energy, measure for spontaneity of reaction,
+# Delta G compute energy required to break secondary structure
+def delta_gibbs():
+    # change of enthalpy, obtained by adding up all the di-nucleotide pairs enthalpy values of each nearest neighbor base pair
+    delta_H
+    # change of entropy, obtained by adding up all the di-nucleotide pairs entropy values of each nearest neighbor base pair
+    delta_S  #
+    return delta_H - T*delta_S
+    pass
+
+def column_matches(aligned_sequences, pos, offset, gap_symbol):
+    #print 'start is ', pos
+    offset2 = min(offset, len(aligned_sequences[0].seq)-pos)
+    matchstr = ['N' for _ in range(min(offset, len(aligned_sequences[0].seq)-pos))]
+    codes = {1: '|', 2: '2', 3: '3', 4: '4'}
+    for i in range(offset2):
+        symbols = set([aseq.seq[pos + i] for aseq in aligned_sequences])
+        #print 'i, symbols: ', symbols
+        matchstr[i] = 'N' if 'N' in symbols or gap_symbol in symbols else codes[len(symbols)]
+    return ''.join(matchstr)
+
 # check if all target sequences satisfy melting temperature range and do not differ too much
 def filter_melt(aligned_sequences, pos, offset, cfg):
     melt = [primer_melt_wallace(aseq.seq[pos:pos+offset]) for aseq in aligned_sequences]
@@ -60,7 +81,7 @@ def filter_melt(aligned_sequences, pos, offset, cfg):
         return True, min_melt, max_melt
     return False, min_melt, max_melt
 
-# GC content in the primer should be between 40-60%
+# GC content in the primer should be between 40-60%, returns True if seqs pass the filter
 def filter_GC_content(aligned_sequences, pos, offset, cfg):
     GC_min, GC_max = int(cfg.var['gc_content'][0]*offset), int(cfg.var['gc_content'][1]*offset)
     logging.debug('GC_min, max = [{}, {}]'.format(GC_min, GC_max))
@@ -81,7 +102,8 @@ def filter_GC_clamp(sequence, sense='+'):
         return False, gc
     return True, gc
 
-# check for 2ndary structure hairpin, may only be present at 3' end with a delta(G) = -2 kcal/mol, or internally with a delta(G) of -3 kcal/mol
+# check for 2ndary structure hairpin, may only be present at 3' end with a delta(G) = -2 kcal/mol,
+# or internally with a delta(G) of -3 kcal/mol
 # TODO: upper limit for loop length is disrespected currently
 def filter_hairpin(seq, cfg):
     n, min_loop_len = len(seq), int(cfg.var['hairpin_loop_len'][0])
@@ -92,8 +114,29 @@ def filter_hairpin(seq, cfg):
             for i_inv in range(n - 2*m - min_loop_len):
                 if seq[i:i+m] == seq_ci[i_inv:i_inv+m]:
                     #print seq[i:i+m], ' == ', seq_ci[i_inv:i_inv+m]
-                    return True
-    return False
+                    return False
+    return True
+
+'''
+    Same sense interaction: sequence is partially homologous to itself.
+'''
+def filter_selfdimer(seq, cfg):
+    seq_rev = seq[::-1]
+    return filter_crossdimer(seq, seq[::-1], cfg)
+
+'''
+    Pairwise interaction: sequence s is partially homologous to sequence t.
+    If primer binding is too strong in terms of delta G, less primers are available for DNA binding.
+    Todo: Use discrete FFT convolution to compute all free Gibb's energy values for all overlaps in O(nlogn).
+'''
+def filter_crossdimer(s, t, cfg):
+    n, m = len(s), len(t)
+    cnv = [0 for _ in range(len(s)+len(t)-1)]
+    for n in range(len(s) + len(t) - 1):
+        cnv[n] = sum([delta_G(s[m], t[n-m]) for m in range(len(s))])
+    if min(cnv) < cfg.var['delta_G_cross']:
+        return False
+    return True, min(cnv)
 
 # translate into complementary string without reversing
 def complement(dna_sequence):
