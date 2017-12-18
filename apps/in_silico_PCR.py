@@ -46,6 +46,7 @@ LEVELS = {'debug': logging.DEBUG,
 qseqid, sseqid, pident, length, mismatch, gapopen, qstart, qend, sstart, send, evalue, bitscore = 0,1,2,3,4,5,6,7,8,9,10,11
 eps = 1e-6
 costs = lambda match: match.fw[evalue] + match.fw[evalue]
+header = '#species;taxid;qseqid_fw;qseqid_rv;sseqid;pident_fw;pident_rv;evalue_fw;evalue_rv;sstart_fw;send_fw;sstart_rv;send_rv;dist'
 
 class Primer(object):
     def __init__(self, primer_id_seq):
@@ -91,7 +92,7 @@ class Config(object):
             for f in self.result_file:
                 if os.path.isfile(f):
                     os.system("rm " + f)
-                os.system('echo "#species;taxid;qseqid_fw;qseqid_rv;sseqid;pident_fw;pident_rv;evalue_fw;evalue_rv;sstart_fw;send_fw;sstart_rv;send_rv;dist" > {:s}'.format(f))
+                os.system('echo "{:s}" > {:s}'.format(header, f))
             for f in self.no_hits_file:
                 if os.path.isfile(f):
                     os.system("rm " + f)
@@ -123,8 +124,6 @@ class Match(object):
         str(self.fw[evalue]), str(self.rv[evalue]), str(self.fw[sstart]), str(self.fw[send]),
         str(self.rv[sstart]), str(self.rv[send]), str(self.rv[sstart] - self.fw[send])]) + '\n'
 
-
-
 taxids_dict = {}    # {taxid: species_name}, for later sorting
 query_results = {}  # {taxid: QueryResult}
 
@@ -151,6 +150,7 @@ def query_all(config):
     # write merged results
     logging.info("Write merged result file: " + config.result_file[-1])
     with open(config.result_file[-1], 'w') as f:
+        f.write('{:s}\n'.format(header))
         for key in sorted(merged.keys()):
             f.write(merged[key].compress())
 
@@ -227,7 +227,6 @@ def query(config, row, db_idx):
     matches = filter(lambda m:  m.fw[evalue] + m.rv[evalue] <= min_evalue + eps, matches)
 
     # write intermediate results to csv file
-    # species;taxid;qseqid_fw;qseqid_rv;sseqid;pident_fw;pident_rv;evalue_fw;evalue_rv;sstart_fw;sstart_rv;dist
     logging.debug(config.result_file)
     with open(config.result_file[db_idx], 'a') as fhdlr:
         logging.info("Write match results for " + name_taxid_accs[0] + " to " + config.result_file[db_idx])
