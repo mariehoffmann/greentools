@@ -16,23 +16,31 @@ import re
 import sys
 import logging
 
-NUMBER = re.compile('[-+]?\d*\.?\d+')
+INT = re.compile('^[-+]?\d+$')
+FLOAT = re.compile('^[-+]?\d*\.\d*$')
+SYMBOL = re.compile('^\D$')
 STRING = re.compile('[\w\.\/]+')
 STRING2 = re.compile("\'[\w\.\/]+\'")
-LIST = re.compile('\[.+?\]')
+LIST = re.compile('^\[.+?\]$')
 
 # value:string, recognize value type by rx match
 def convert(val):
-    if NUMBER.match(val) is not None:
+    if INT.match(val) is not None:
+        return int(val)
+    if FLOAT.match(val) is not None:
         return float(val)
+    if SYMBOL.match(val) is not None:
+        return val
     if STRING.match(val) is not None:
         return val
     if STRING2.match(val) is not None:
         return val[1:-1]  # rm apostrophes
     if LIST.match(val) is not None:
         items = [item.strip() for item in val[val.find('[')+1:val.find(']')].split(',')]
-        #print 'items split and stripped: ' + str(items)
         return [convert(item) for item in items]
+    else:
+        print 'Warning, unrecognized type of value: "', val, '"'
+        return None
 
 class Config(object):
     def __init__(self, path_to_config):
@@ -42,10 +50,10 @@ class Config(object):
         self.var = {}
         self.order = []
         with open(path_to_config) as f:
-            print '################ Settings ################'
+            print '---------------- Configuration ----------------'
             lines = [line.strip() for line in f.readlines() if line.startswith('#') is False]
             for pos, line in enumerate(lines):
-                vv = line.split('=')
+                vv = [v.strip() for v in line.split('=')]
                 if len(vv) != 2:
                     logging.error("Unexpected row format in configuration file: " + line)
                     sys.exit(-1)
@@ -53,8 +61,5 @@ class Config(object):
                     logging.warning("Variable not set: " + vv)
                     continue
                 self.var[vv[0]] = convert(vv[1])
-
-                print vv[0] + ': ' + vv[1]
-                #print "type is ", type(vv[1])
                 self.order.append((vv[0], pos))
         logging.info(self.var)

@@ -45,11 +45,9 @@ def primer_melt_salt(primer, Na):
 # variation measure for a block of aligned sequences in terms of number of columns
 # having different nucleotides. A low score indicates high conservation.
 # input sequences:[[]], pos:int, offset:int
-def ambiguous_positions(aligned_sequences, pos, offset):
+def variation_score(aligned_sequences, pos, offset):
     transposed = [[aseq.seq[i] for aseq in aligned_sequences] for i in range(pos, pos+offset)]
-    #print transposed
     score = sum([1 if len(set(col)) > 1 else 0 for col in transposed])
-    #print score
     return score
 
 # G: Gibb's free energy, measure for spontaneity of reaction,
@@ -63,13 +61,11 @@ def delta_gibbs():
     pass
 
 def column_matches(aligned_sequences, pos, offset, gap_symbol):
-    #print 'start is ', pos
     offset2 = min(offset, len(aligned_sequences[0].seq)-pos)
     matchstr = ['N' for _ in range(min(offset, len(aligned_sequences[0].seq)-pos))]
     codes = {1: '|', 2: '2', 3: '3', 4: '4'}
     for i in range(offset2):
         symbols = set([aseq.seq[pos + i] for aseq in aligned_sequences])
-        #print 'i, symbols: ', symbols
         matchstr[i] = 'N' if 'N' in symbols or gap_symbol in symbols else codes[len(symbols)]
     return ''.join(matchstr)
 
@@ -77,7 +73,7 @@ def column_matches(aligned_sequences, pos, offset, gap_symbol):
 def filter_melt(aligned_sequences, pos, offset, cfg):
     melt = [primer_melt_wallace(aseq.seq[pos:pos+offset]) for aseq in aligned_sequences]
     max_melt, min_melt = max(melt), min(melt)
-    if min_melt >= cfg.var['melt_temp'][0] and max_melt <= cfg.var['melt_temp'][1] and max_melt - min_melt <= cfg.var['max_melt_diff']:
+    if min_melt >= cfg.var['min_melt_temp'] and max_melt <= cfg.var['max_melt_temp'] and max_melt - min_melt <= cfg.var['max_melt_diff']:
         return True, min_melt, max_melt
     return False, min_melt, max_melt
 
@@ -157,7 +153,6 @@ def compress(aligned_sequences, pos, length):
 
 def complement_compress(aligned_sequences, pos, length):
     return compress_helper(aligned_sequences, pos, length, {'A': 8, 'C': 4, 'G': 2, 'T': 1})[::-1]
-
 
 
 if __name__ == '__main__':
